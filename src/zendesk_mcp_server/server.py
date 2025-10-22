@@ -10,6 +10,9 @@ from mcp.server import InitializationOptions, NotificationOptions
 from mcp.server import Server, types
 from mcp.server.stdio import stdio_server
 from pydantic import AnyUrl
+from starlette.applications import Starlette
+from starlette.routing import Route
+import uvicorn
 
 from zendesk_mcp_server.zendesk_client import ZendeskClient
 
@@ -244,6 +247,83 @@ async def handle_list_tools() -> list[types.Tool]:
                 },
                 "required": ["ticket_id"]
             }
+        ),
+        types.Tool(
+            name="get_user",
+            description="Retrieve a Zendesk user by their ID",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "integer",
+                        "description": "The ID of the user to retrieve"
+                    }
+                },
+                "required": ["user_id"]
+            }
+        ),
+        types.Tool(
+            name="search_users_by_email",
+            description="Search for Zendesk users by email address",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email": {
+                        "type": "string",
+                        "description": "Email address to search for (can be partial)"
+                    }
+                },
+                "required": ["email"]
+            }
+        ),
+        types.Tool(
+            name="create_user",
+            description="Create a new Zendesk user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email": {
+                        "type": "string",
+                        "description": "User's email address"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "User's full name"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "User role: end-user, agent, or admin",
+                        "default": "end-user"
+                    },
+                    "phone": {
+                        "type": "string",
+                        "description": "User's phone number"
+                    },
+                    "organization_id": {
+                        "type": "integer",
+                        "description": "ID of the organization this user belongs to"
+                    }
+                },
+                "required": ["email", "name"]
+            }
+        ),
+        types.Tool(
+            name="get_user_tickets",
+            description="Get all tickets requested by a specific user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "integer",
+                        "description": "The ID of the user"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status filter: new, open, pending, solved, closed"
+                    }
+                },
+                "required": ["user_id"]
+            }
         )
     ]
 
@@ -336,6 +416,58 @@ async def handle_call_tool(
                 text=json.dumps({"message": "Ticket updated successfully", "ticket": updated}, indent=2)
             )]
 
+        elif name == "get_user":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            user = zendesk_client.get_user(arguments["user_id"])
+            return [types.TextContent(
+                type="text",
+                text=json.dumps(user, indent=2)
+            )]
+
+        elif name == "search_users_by_email":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            users = zendesk_client.search_users_by_email(arguments["email"])
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "found": len(users),
+                    "users": users
+                }, indent=2)
+            )]
+
+        elif name == "create_user":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            user = zendesk_client.create_user(
+                email=arguments["email"],
+                name=arguments["name"],
+                role=arguments.get("role"),
+                phone=arguments.get("phone"),
+                organization_id=arguments.get("organization_id")
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({"message": "User created successfully", "user": user}, indent=2)
+            )]
+
+        elif name == "get_user_tickets":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            tickets = zendesk_client.get_user_tickets(
+                user_id=arguments["user_id"],
+                status=arguments.get("status")
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "user_id": arguments["user_id"],
+                    "count": len(tickets),
+                    "tickets": tickets
+                }, indent=2)
+            )]
+
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -407,5 +539,69 @@ async def main():
         )
 
 
+from mcp.server.sse import SseServerTransport
+
+# Create SSE transport
+sse = SseServerTransport("/mcp")
+
+
+async def handle_mcp(scope, receive, send):
+    """Route MCP requests based on method - ASGI interface"""
+    request_method = scope.get("method", "")
+
+    if request_method == "GET":
+        # Handle SSE connections
+        async with sse.connect_sse(scope, receive, send) as streams:
+            await server.run(
+                streams[0],
+                streams[1],
+                InitializationOptions(
+                    server_name="Zendesk",
+                    server_version="0.1.0",
+                    capabilities=server.get_capabilities(
+                        notification_options=NotificationOptions(),
+                        experimental_capabilities={},
+                    ),
+                ),
+            )
+    elif request_method == "POST":
+        # Handle POST requests with JSON-RPC messages
+        await sse.handle_post_message(scope, receive, send)
+
+
+async def handle_mcp_request(request):
+    """Wrapper to convert Starlette Request to ASGI interface"""
+    await handle_mcp(request.scope, request.receive, request._send)
+
+
+def create_http_app():
+    """Create Starlette app with /mcp endpoint"""
+    app = Starlette(
+        debug=True,
+        routes=[
+            Route("/mcp", handle_mcp_request, methods=["GET", "POST"]),
+        ],
+    )
+    return app
+
+
+def run_http_server():
+    """Run the HTTP server"""
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("MCP_PORT", "8000"))
+
+    logger.info(f"Starting Zendesk MCP HTTP server on {host}:{port}")
+    logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
+
+    app = create_http_app()
+    uvicorn.run(app, host=host, port=port)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Check if we should run in HTTP mode or stdio mode
+    mode = os.getenv("MCP_MODE", "stdio")
+
+    if mode == "http":
+        run_http_server()
+    else:
+        asyncio.run(main())

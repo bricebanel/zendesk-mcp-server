@@ -282,3 +282,133 @@ class ZendeskClient:
             }
         except Exception as e:
             raise Exception(f"Failed to update ticket {ticket_id}: {str(e)}")
+
+    def get_user(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get a user by their ID.
+
+        Args:
+            user_id: The ID of the user to retrieve
+
+        Returns:
+            Dict containing user information
+        """
+        try:
+            user = self.client.users(id=user_id)
+            return {
+                'id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'role': user.role,
+                'phone': getattr(user, 'phone', None),
+                'organization_id': user.organization_id,
+                'created_at': str(user.created_at),
+                'updated_at': str(user.updated_at),
+                'time_zone': getattr(user, 'time_zone', None),
+                'locale': getattr(user, 'locale', None),
+                'active': getattr(user, 'active', None),
+                'verified': getattr(user, 'verified', None),
+                'tags': list(getattr(user, 'tags', []) or []),
+            }
+        except Exception as e:
+            raise Exception(f"Failed to get user {user_id}: {str(e)}")
+
+    def search_users_by_email(self, email: str) -> List[Dict[str, Any]]:
+        """
+        Search for users by email address.
+
+        Args:
+            email: Email address to search for (can be partial)
+
+        Returns:
+            List of users matching the email
+        """
+        try:
+            users = self.client.search(type='user', email=email)
+            return [{
+                'id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'role': user.role,
+                'organization_id': user.organization_id,
+                'created_at': str(user.created_at),
+                'active': getattr(user, 'active', None),
+            } for user in users]
+        except Exception as e:
+            raise Exception(f"Failed to search users by email '{email}': {str(e)}")
+
+    def create_user(self, email: str, name: str, **kwargs) -> Dict[str, Any]:
+        """
+        Create a new Zendesk user.
+
+        Args:
+            email: User's email address
+            name: User's full name
+            **kwargs: Optional fields like role, phone, organization_id, etc.
+
+        Returns:
+            Dict containing created user information
+        """
+        try:
+            from zenpy.lib.api_objects import User
+
+            user = User(
+                email=email,
+                name=name,
+                role=kwargs.get('role', 'end-user'),
+                phone=kwargs.get('phone'),
+                organization_id=kwargs.get('organization_id'),
+                time_zone=kwargs.get('time_zone'),
+                locale=kwargs.get('locale'),
+            )
+
+            created = self.client.users.create(user)
+
+            return {
+                'id': created.id,
+                'name': created.name,
+                'email': created.email,
+                'role': created.role,
+                'organization_id': created.organization_id,
+                'created_at': str(created.created_at),
+                'active': getattr(created, 'active', None),
+            }
+        except Exception as e:
+            raise Exception(f"Failed to create user: {str(e)}")
+
+    def get_user_tickets(self, user_id: int, status: str = None) -> List[Dict[str, Any]]:
+        """
+        Get all tickets requested by a specific user.
+
+        Args:
+            user_id: The ID of the user
+            status: Optional status filter (new, open, pending, solved, closed)
+
+        Returns:
+            List of tickets requested by the user
+        """
+        try:
+            # Use the search API to find tickets by requester
+            search_query = f'type:ticket requester:{user_id}'
+            if status:
+                search_query += f' status:{status}'
+
+            tickets = self.client.search(query=search_query, type='ticket')
+
+            ticket_list = []
+            for ticket in tickets:
+                ticket_list.append({
+                    'id': ticket.id,
+                    'subject': ticket.subject,
+                    'description': ticket.description,
+                    'status': ticket.status,
+                    'priority': ticket.priority,
+                    'created_at': str(ticket.created_at),
+                    'updated_at': str(ticket.updated_at),
+                    'requester_id': ticket.requester_id,
+                    'assignee_id': ticket.assignee_id,
+                })
+
+            return ticket_list
+        except Exception as e:
+            raise Exception(f"Failed to get tickets for user {user_id}: {str(e)}")
