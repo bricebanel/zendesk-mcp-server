@@ -412,3 +412,156 @@ class ZendeskClient:
             return ticket_list
         except Exception as e:
             raise Exception(f"Failed to get tickets for user {user_id}: {str(e)}")
+
+    def list_macros(self, access: str = None, active: bool = None, category: int = None) -> List[Dict[str, Any]]:
+        """
+        List all macros accessible to the current user.
+
+        Args:
+            access: Optional filter by access level (personal, agents, shared, account)
+            active: Optional filter by active status (true/false)
+            category: Optional filter by category ID
+
+        Returns:
+            List of macros with their details
+        """
+        try:
+            # Build query parameters
+            params = {}
+            if access:
+                params['access'] = access
+            if active is not None:
+                params['active'] = str(active).lower()
+            if category:
+                params['category'] = str(category)
+
+            query_string = urllib.parse.urlencode(params) if params else ''
+            url = f"{self.base_url}/macros.json"
+            if query_string:
+                url += f"?{query_string}"
+
+            # Create request with auth header
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', self.auth_header)
+            req.add_header('Content-Type', 'application/json')
+
+            # Make the API request
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            macros_data = data.get('macros', [])
+
+            # Process macros to return essential fields
+            macro_list = []
+            for macro in macros_data:
+                macro_list.append({
+                    'id': macro.get('id'),
+                    'title': macro.get('title'),
+                    'description': macro.get('description'),
+                    'active': macro.get('active'),
+                    'actions': macro.get('actions', []),
+                    'restriction': macro.get('restriction'),
+                    'created_at': macro.get('created_at'),
+                    'updated_at': macro.get('updated_at'),
+                })
+
+            return macro_list
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else "No response body"
+            raise Exception(f"Failed to list macros: HTTP {e.code} - {e.reason}. {error_body}")
+        except Exception as e:
+            raise Exception(f"Failed to list macros: {str(e)}")
+
+    def get_macro(self, macro_id: int) -> Dict[str, Any]:
+        """
+        Get a specific macro by its ID.
+
+        Args:
+            macro_id: The ID of the macro to retrieve
+
+        Returns:
+            Dict containing macro details including actions
+        """
+        try:
+            url = f"{self.base_url}/macros/{macro_id}.json"
+
+            # Create request with auth header
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', self.auth_header)
+            req.add_header('Content-Type', 'application/json')
+
+            # Make the API request
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            macro = data.get('macro', {})
+
+            return {
+                'id': macro.get('id'),
+                'title': macro.get('title'),
+                'description': macro.get('description'),
+                'active': macro.get('active'),
+                'actions': macro.get('actions', []),
+                'restriction': macro.get('restriction'),
+                'created_at': macro.get('created_at'),
+                'updated_at': macro.get('updated_at'),
+            }
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else "No response body"
+            raise Exception(f"Failed to get macro {macro_id}: HTTP {e.code} - {e.reason}. {error_body}")
+        except Exception as e:
+            raise Exception(f"Failed to get macro {macro_id}: {str(e)}")
+
+    def apply_macro_to_ticket(self, ticket_id: int, macro_id: int) -> Dict[str, Any]:
+        """
+        Preview what changes a macro would make to a ticket.
+        This does NOT actually apply the macro - it returns the changes that would be made.
+        Use update_ticket() with the returned fields to actually apply the changes.
+
+        Args:
+            ticket_id: The ID of the ticket
+            macro_id: The ID of the macro to apply
+
+        Returns:
+            Dict containing the ticket with proposed changes from the macro
+        """
+        try:
+            url = f"{self.base_url}/tickets/{ticket_id}/macros/{macro_id}/apply.json"
+
+            # Create request with auth header
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', self.auth_header)
+            req.add_header('Content-Type', 'application/json')
+
+            # Make the API request
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            result = data.get('result', {})
+            ticket_changes = result.get('ticket', {})
+            comment = result.get('comment', {})
+
+            return {
+                'ticket_changes': {
+                    'subject': ticket_changes.get('subject'),
+                    'status': ticket_changes.get('status'),
+                    'priority': ticket_changes.get('priority'),
+                    'type': ticket_changes.get('type'),
+                    'assignee_id': ticket_changes.get('assignee_id'),
+                    'group_id': ticket_changes.get('group_id'),
+                    'tags': ticket_changes.get('tags'),
+                    'custom_fields': ticket_changes.get('custom_fields'),
+                },
+                'comment': {
+                    'body': comment.get('body'),
+                    'html_body': comment.get('html_body'),
+                    'public': comment.get('public'),
+                } if comment else None,
+                'macro_id': macro_id,
+                'ticket_id': ticket_id,
+            }
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else "No response body"
+            raise Exception(f"Failed to apply macro {macro_id} to ticket {ticket_id}: HTTP {e.code} - {e.reason}. {error_body}")
+        except Exception as e:
+            raise Exception(f"Failed to apply macro {macro_id} to ticket {ticket_id}: {str(e)}")

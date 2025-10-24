@@ -324,6 +324,60 @@ async def handle_list_tools() -> list[types.Tool]:
                 },
                 "required": ["user_id"]
             }
+        ),
+        types.Tool(
+            name="list_macros",
+            description="List all macros accessible to the current user",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "access": {
+                        "type": "string",
+                        "description": "Filter by access level: personal, agents, shared, or account"
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "description": "Filter by active status"
+                    },
+                    "category": {
+                        "type": "integer",
+                        "description": "Filter by category ID"
+                    }
+                },
+                "required": []
+            }
+        ),
+        types.Tool(
+            name="get_macro",
+            description="Get a specific macro by its ID",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "macro_id": {
+                        "type": "integer",
+                        "description": "The ID of the macro to retrieve"
+                    }
+                },
+                "required": ["macro_id"]
+            }
+        ),
+        types.Tool(
+            name="apply_macro_to_ticket",
+            description="Preview what changes a macro would make to a ticket. This does NOT actually apply the macro - it returns the proposed changes. Use update_ticket with the returned fields to actually apply the changes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {
+                        "type": "integer",
+                        "description": "The ID of the ticket"
+                    },
+                    "macro_id": {
+                        "type": "integer",
+                        "description": "The ID of the macro to apply"
+                    }
+                },
+                "required": ["ticket_id", "macro_id"]
+            }
         )
     ]
 
@@ -468,6 +522,48 @@ async def handle_call_tool(
                 }, indent=2)
             )]
 
+        elif name == "list_macros":
+            access = arguments.get("access") if arguments else None
+            active = arguments.get("active") if arguments else None
+            category = arguments.get("category") if arguments else None
+
+            macros = zendesk_client.list_macros(
+                access=access,
+                active=active,
+                category=category
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "count": len(macros),
+                    "macros": macros
+                }, indent=2)
+            )]
+
+        elif name == "get_macro":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            macro = zendesk_client.get_macro(arguments["macro_id"])
+            return [types.TextContent(
+                type="text",
+                text=json.dumps(macro, indent=2)
+            )]
+
+        elif name == "apply_macro_to_ticket":
+            if not arguments:
+                raise ValueError("Missing arguments")
+            result = zendesk_client.apply_macro_to_ticket(
+                ticket_id=arguments["ticket_id"],
+                macro_id=arguments["macro_id"]
+            )
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "message": "Macro preview generated. Use update_ticket with these fields to apply the changes.",
+                    "result": result
+                }, indent=2)
+            )]
+
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -571,7 +667,10 @@ async def handle_mcp(scope, receive, send):
 
 async def handle_mcp_request(request):
     """Wrapper to convert Starlette Request to ASGI interface"""
+    from starlette.responses import Response
     await handle_mcp(request.scope, request.receive, request._send)
+    # Return empty response as actual response is handled via ASGI interface
+    return Response()
 
 
 def create_http_app():
@@ -588,7 +687,7 @@ def create_http_app():
 def run_http_server():
     """Run the HTTP server"""
     host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8000"))
+    port = int(os.getenv("PORT", "8000"))
 
     logger.info(f"Starting Zendesk MCP HTTP server on {host}:{port}")
     logger.info(f"MCP endpoint available at: http://{host}:{port}/mcp")
